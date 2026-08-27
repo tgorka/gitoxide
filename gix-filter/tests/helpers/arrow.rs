@@ -175,6 +175,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        // A filter that performs the handshake and then ignores whatever happens to its input, to
+        // emulate a `process` filter that doesn't shut down when its stdin is closed. Such a filter
+        // has to be terminated instead of waited for.
+        //
+        // The wait is bounded so a test run can't leave a process behind: a driver command that needs
+        // a shell (like the quoted path the tests use) makes the shell the child that gitoxide owns
+        // and kills, so this grandchild has to end on its own.
+        "process-ignores-eof" => {
+            let _srv = gix_filter::driver::process::Server::handshake(
+                stdin(),
+                stdout(),
+                "git-filter",
+                &mut |versions| versions.contains(&2).then_some(2),
+                &["clean", "smudge"],
+            )?;
+            std::thread::sleep(Duration::from_secs(10));
+        }
         // simple filters actually don't support streaming - they have to first read all input, then produce all output,
         // but can't mix reading stdin and write to stdout at the same time as `git` (or `gitoxide`) don't read the output while
         // writing the input.

@@ -12,11 +12,12 @@ mod baseline {
 }
 
 mod shutdown {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
+    use bstr::ByteVec;
     use gix_filter::driver::{Operation, Process, shutdown::Mode};
 
-    use crate::driver::apply::driver_with_process;
+    use crate::driver::{apply::driver_with_process, driver_path};
 
     pub(crate) fn extract_client(
         res: Option<gix_filter::driver::Process<'_>>,
@@ -131,6 +132,58 @@ mod shutdown {
                 "the child of the {whose} was waited for by the state that launched it"
             );
         }
+        Ok(())
+    }
+
+    /// `State::context` is public, and a field can't be moved out of a type that implements `Drop`
+    /// (E0509). So the reaping lives on the private field's type instead, and this pins that: it fails
+    /// to compile if `State` itself ever grows a `Drop` implementation.
+    #[test]
+    fn the_public_context_field_can_still_be_moved_out_of_a_state() -> crate::Result {
+        let state = gix_filter::driver::State::default();
+        let context = state.context;
+        drop(context);
+        Ok(())
+    }
+
+    /// A filter that doesn't notice that its input was closed must not be able to block the drop, as
+    /// `Repository::status()` and checkout drop their pipeline internally where no caller could pick
+    /// [`Mode::Ignore`]. Instead, the process that was spawned is killed once its grace period is up.
+    ///
+    /// Note that the driver command is a quoted path, so it needs a shell and the child that is owned
+    /// here is that shell — which is what these assertions are about.
+    #[cfg(unix)]
+    #[test]
+    fn a_filter_that_ignores_its_closed_input_cannot_block_the_drop() -> crate::Result {
+        let mut driver = driver_with_process();
+        driver.process = Some({
+            let mut command = driver_path();
+            command.push_str(" process-ignores-eof");
+            command
+        });
+
+        let mut state = gix_filter::driver::State::default();
+        let pid = extract_client(state.maybe_launch_process(&driver, Operation::Clean, "does not matter".into())?).id();
+        assert_eq!(
+            crate::reap::observe(pid),
+            crate::reap::Child::Running,
+            "the filter completed its handshake and is now waiting for work it will never get"
+        );
+
+        let start = Instant::now();
+        drop(state);
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            crate::reap::observe(pid),
+            crate::reap::Child::Reaped,
+            "the spawned process was killed and waited for, rather than left behind"
+        );
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "the drop took {elapsed:?}, so it waited for the filter instead of terminating it \
+             (the grace period is a second, and this filter stays alive for ten)"
+        );
         Ok(())
     }
 }

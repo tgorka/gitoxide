@@ -4,7 +4,7 @@ use bstr::{BStr, BString};
 
 use crate::{
     Driver, driver,
-    driver::{Operation, Process, State, process, process::client::invoke},
+    driver::{Operation, Process, State, process, process::client::invoke, reap},
 };
 
 /// What to do if delay is supported by a process filter.
@@ -201,7 +201,7 @@ impl State {
                         "error" => {}
                         _strange => {
                             let client = self.running.remove(&key.0).expect("we definitely have it");
-                            client.into_child().kill().ok();
+                            reap::kill_and_reap(client.into_child());
                         }
                     }
                     Err(Error::ProcessStatus {
@@ -346,7 +346,24 @@ pub(crate) fn handle_io_err(err: &std::io::Error, running: &mut HashMap<BString,
         err.kind(),
         std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof
     ) {
-        running.remove(process).expect("present or we wouldn't be here");
+        // These errors mean the filter is already gone, but on Unix it holds its slot in the process
+        // table until it is waited for, which is what dropping the client here does.
+        drop(running.remove(process).expect("present or we wouldn't be here"));
+    }
+}
+
+impl Drop for ReadFilterOutput {
+    fn drop(&mut self) {
+        let Some((child, _command)) = self.child.take() else {
+            return;
+        };
+        // Reached when the reader was abandoned before its end, or unwound past. Close the filter's
+        // output first so it sees a broken pipe and stops, rather than blocking on a pipe nobody reads.
+        drop(self.inner.take());
+        reap::terminate_and_reap(child);
+        // Only now can a writer thread that is still feeding the filter make progress, as its pending
+        // write fails against the closed input of a process that is gone.
+        drop(self.write_thread.take());
     }
 }
 

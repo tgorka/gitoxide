@@ -17,6 +17,8 @@ pub mod delayed;
 ///
 pub mod process;
 
+mod reap;
+
 /// A literal driver process.
 pub enum Process<'a> {
     /// A spawned processes to handle a single file
@@ -60,20 +62,24 @@ impl Operation {
 ///
 /// ### Lifecycle
 ///
-/// Long-running processes are terminated and waited for when this instance is dropped, so they never
-/// linger in the process table of the operating system. Call
-/// [`shutdown()`][State::shutdown()] or [`shutdown_mut()`][State::shutdown_mut()] explicitly to learn
-/// how each of them exited, or to opt out of waiting with [`shutdown::Mode::Ignore`].
+/// Long-running processes are shut down and reaped when this instance is dropped, so they never linger
+/// in the process table of the operating system. Each spawned process is given a grace period of one
+/// second to exit on its own once its input and output are closed, and is killed if it doesn't, so a
+/// filter which ignores the closure of its input cannot block the drop.
+///
+/// Call [`shutdown()`][State::shutdown()] or [`shutdown_mut()`][State::shutdown_mut()] instead to learn how
+/// each process exited, to wait for them without a time limit, or to opt out of waiting altogether with
+/// [`shutdown::Mode::Ignore`].
 ///
 /// Note that [`clone()`][Clone::clone()] does *not* clone the running processes, so each clone owns and
 /// terminates only the processes that it launched itself.
 #[derive(Default)]
 pub struct State {
-    /// The list of currently running processes. These are preferred over simple clean-and-smudge programs.
+    /// The currently running processes. These are preferred over simple clean-and-smudge programs.
     ///
     /// Note that these processes shut down once their stdin/stdout are dropped, but on Unix they keep
-    /// occupying a slot in the process table until they are waited for, which is what dropping this
-    /// instance does.
+    /// occupying a slot in the process table until they are waited for, which is what dropping a
+    /// [`process::Client`] does.
     running: HashMap<BString, process::Client>,
 
     /// The context to pass to spawned filter programs.
@@ -97,14 +103,6 @@ impl Clone for State {
             running: Default::default(),
             context: self.context.clone(),
         }
-    }
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        // Waiting is expected to be brief: dropping a client closes the input and output of its process,
-        // which is how it is told to exit. Errors are of no use here as there is nothing left to retry.
-        let _ = self.shutdown_mut(shutdown::Mode::WaitForProcesses);
     }
 }
 

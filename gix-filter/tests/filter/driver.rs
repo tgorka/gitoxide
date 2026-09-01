@@ -11,7 +11,7 @@ mod baseline {
     }
 }
 
-mod shutdown {
+pub(crate) mod shutdown {
     use std::time::Duration;
 
     use gix_filter::driver::{Operation, Process, shutdown::Mode};
@@ -133,6 +133,17 @@ mod shutdown {
         }
         Ok(())
     }
+
+    /// `State::context` is public, and a field can't be moved out of a type that implements `Drop`
+    /// (E0509). So the reaping lives on the clients it owns instead, and this pins that: it fails to
+    /// compile if `State` itself ever grows a `Drop` implementation.
+    #[test]
+    fn the_public_context_field_can_still_be_moved_out_of_a_state() -> crate::Result {
+        let state = gix_filter::driver::State::default();
+        let context = state.context;
+        drop(context);
+        Ok(())
+    }
 }
 
 pub(crate) mod apply {
@@ -145,7 +156,7 @@ pub(crate) mod apply {
         driver::{Operation, apply, apply::Delay},
     };
 
-    fn driver_no_process() -> Driver {
+    pub(crate) fn driver_no_process() -> Driver {
         let mut driver = driver_with_process();
         driver.process = None;
         driver
@@ -566,7 +577,7 @@ pub(crate) mod apply {
         Ok(())
     }
 
-    fn extract_delayed_key(res: Option<apply::MaybeDelayed<'_>>) -> driver::Key {
+    pub(crate) fn extract_delayed_key(res: Option<apply::MaybeDelayed<'_>>) -> driver::Key {
         match res {
             Some(apply::MaybeDelayed::Immediate(_)) | None => {
                 unreachable!("must use process that supports delaying")
@@ -575,7 +586,7 @@ pub(crate) mod apply {
         }
     }
 
-    fn context_from_path(path: &str) -> apply::Context<'_, '_> {
+    pub(crate) fn context_from_path(path: &str) -> apply::Context<'_, '_> {
         apply::Context {
             rela_path: path.into(),
             ref_name: None,
@@ -606,7 +617,7 @@ pub(crate) mod apply {
     }
 }
 
-fn driver_path() -> BString {
+pub(crate) fn driver_path() -> BString {
     fn quote_driver_path(path: &str) -> BString {
         let path = gix_path::to_unix_separators_on_windows(BStr::new(path));
         gix_quote::single(path.as_ref())

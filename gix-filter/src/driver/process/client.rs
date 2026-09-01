@@ -6,6 +6,7 @@ use gix_packetline::blocking_io::{StreamingPeekableIter, Writer, encode};
 use crate::driver::{
     process,
     process::{Capabilities, Client, PacketlineReader},
+    reap,
 };
 
 ///
@@ -148,7 +149,7 @@ impl Client {
 
         drop(read);
         Ok(Client {
-            child: process,
+            child: reap::OnDrop::new(process),
             out: input,
             input: out,
             capabilities,
@@ -304,10 +305,13 @@ impl Client {
 
 /// Lifecycle
 impl Client {
-    /// Return the child handle of the running process.
+    /// Return the child handle of the running process, which is no longer reaped when this instance
+    /// is dropped.
     ///
     /// Note that this will naturally close input and output handles, which is a signal for the child process to shutdown.
-    pub fn into_child(self) -> std::process::Child {
-        self.child
+    /// It is now up to the caller to also wait for it, as a child that exited but wasn't waited for keeps
+    /// occupying a slot in the process table of the operating system.
+    pub fn into_child(mut self) -> std::process::Child {
+        self.child.take()
     }
 }

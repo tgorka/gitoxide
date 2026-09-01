@@ -2,13 +2,17 @@ use std::collections::HashSet;
 
 use gix_packetline::blocking_io::{StreamingPeekableIter, WithSidebands, Writer};
 
+use crate::driver::reap;
+
 /// A set of capabilities that have been negotiated between client and server.
 pub type Capabilities = HashSet<String>;
 
 /// A handle to a client that allows communicating to a long-running process.
+///
+/// The process is terminated and waited for when this instance is dropped, so it can't be left behind
+/// in the process table of the operating system. Use [`into_child()`][Client::into_child()] to take
+/// that responsibility over instead.
 pub struct Client {
-    /// The child process we are communicating with.
-    child: std::process::Child,
     /// The names of the obtained capabilities after the handshake.
     capabilities: Capabilities,
     /// The negotiated version of the protocol.
@@ -17,6 +21,12 @@ pub struct Client {
     input: Writer<std::process::ChildStdin>,
     /// A way to read information sent to us by the process.
     out: StreamingPeekableIter<std::process::ChildStdout>,
+    /// The child process we are communicating with, reaped once it is dropped.
+    ///
+    /// Declared last on purpose, as fields are dropped in declaration order: `input` and `out` above are
+    /// closed first, which is how the process is told to exit, and only then is it waited for. `Client`
+    /// must stay free of a `Drop` implementation of its own for that ordering to be available.
+    child: reap::OnDrop,
 }
 
 /// A handle to facilitate typical server interactions that include the handshake and command-invocations.

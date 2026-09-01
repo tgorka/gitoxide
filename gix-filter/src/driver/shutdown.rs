@@ -6,6 +6,9 @@ use crate::driver::State;
 #[derive(Debug, Copy, Clone)]
 pub enum Mode {
     /// Wait for long-running processes after signaling them to shut down by closing their input and output.
+    ///
+    /// Note that this waits without a time limit, unlike the automatic cleanup performed when a
+    /// [`State`] is dropped, so a process that ignores the closure of its input can block indefinitely.
     WaitForProcesses,
     /// Do not do anything with long-running processes, which typically allows them to keep running or shut down on their own time.
     /// This is the fastest mode as no synchronization happens at all.
@@ -20,8 +23,9 @@ impl State {
     /// Handle long-running processes according to `mode`.
     /// Return a list of `(process, Option<status>)`
     ///
-    /// This is the owned form of [`shutdown_mut()`][State::shutdown_mut()], which is also what
-    /// [`drop`](Drop) uses so no child process is ever left behind.
+    /// This is the owned form of [`shutdown_mut()`][State::shutdown_mut()]. Note that dropping a
+    /// [`State`] also reaps every process it still owns, so calling this is only needed to learn how
+    /// they exited or to choose a different [`Mode`].
     pub fn shutdown(mut self, mode: Mode) -> Result<Vec<(BString, Option<std::process::ExitStatus>)>, std::io::Error> {
         self.shutdown_mut(mode)
     }
@@ -52,6 +56,9 @@ impl State {
                     }
                 }
                 Mode::Ignore => {
+                    // Hand the child out of the client so dropping it can't wait for it after all,
+                    // which is precisely what this mode is for.
+                    drop(client.into_child());
                     out.push((cmd, None));
                 }
             }

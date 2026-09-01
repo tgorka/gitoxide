@@ -2,7 +2,7 @@ use bstr::{BStr, BString};
 
 use crate::{
     driver,
-    driver::{Operation, State, apply::handle_io_err},
+    driver::{Operation, State, apply::handle_io_err, reap},
 };
 
 ///
@@ -89,7 +89,7 @@ impl State {
                 "error" | "abort" => {}
                 _strange => {
                     let client = self.running.remove(&process.0).expect("we definitely have it");
-                    client.into_child().kill().ok();
+                    reap::kill_and_reap(client.into_child());
                 }
             }
             Err(list::Error::ProcessStatus { status })
@@ -144,7 +144,7 @@ impl State {
                 "error" => {}
                 _strange => {
                     let client = self.running.remove(&process.0).expect("we definitely have it");
-                    client.into_child().kill().ok();
+                    reap::kill_and_reap(client.into_child());
                 }
             }
             Err(fetch::Error::ProcessStatus {

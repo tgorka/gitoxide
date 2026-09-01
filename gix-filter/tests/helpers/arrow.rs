@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut next_smudge_aborts = false;
             let mut next_smudge_fails_permanently = false; // a test validates that we don't actually hang
+            let mut next_list_returns_strange_status = false;
             let mut delayed = Vec::new();
             while let Some(mut request) = srv.next_request()? {
                 let needs_failure = request
@@ -141,10 +142,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     "list_available_blobs" => {
                         {
+                            // Dropping this writer ends the response section, which the client reads
+                            // before it looks for the status - even when there is nothing to report.
                             let mut out = request.as_write();
                             let mut last_cmd = None;
                             let mut buf = Vec::<u8>::new();
-                            for (cmd, path, _) in &delayed {
+                            for (cmd, path, _) in if next_list_returns_strange_status {
+                                [].as_slice()
+                            } else {
+                                delayed.as_slice()
+                            } {
                                 if last_cmd.get_or_insert(*cmd) != cmd {
                                     panic!("the API doesn't support mixing cmds as paths might not be unique anymore")
                                 }
@@ -154,7 +161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 out.write_all(&buf)?;
                             }
                         }
-                        request.write_status(process::Status::success())?;
+                        request.write_status(if next_list_returns_strange_status {
+                            process::Status::exit()
+                        } else {
+                            process::Status::success()
+                        })?;
                     }
                     "wait-1-s" => {
                         std::io::copy(&mut request.as_read(), &mut std::io::sink())?;
@@ -171,9 +182,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         request.write_status(process::Status::success())?;
                         next_smudge_fails_permanently = true;
                     }
+                    "next-list-returns-strange-status" => {
+                        std::io::copy(&mut request.as_read(), &mut std::io::sink())?;
+                        request.write_status(process::Status::success())?;
+                        next_list_returns_strange_status = true;
+                    }
                     unknown => panic!("Unknown capability requested: {unknown}"),
                 }
             }
+        }
+        // A filter that performs the handshake and then ignores whatever happens to its input, to
+        // emulate a `process` filter that doesn't shut down when its stdin is closed. Such a filter
+        // has to be terminated instead of waited for.
+        //
+        // The wait is bounded so a test run can't leave a process behind: a driver command that needs
+        // a shell (like the quoted path the tests use) makes the shell the child that gitoxide owns
+        // and kills, so this grandchild has to end on its own.
+        "process-ignores-eof" => {
+            let _srv = gix_filter::driver::process::Server::handshake(
+                stdin(),
+                stdout(),
+                "git-filter",
+                &mut |versions| versions.contains(&2).then_some(2),
+                &["clean", "smudge"],
+            )?;
+            std::thread::sleep(Duration::from_secs(10));
         }
         // simple filters actually don't support streaming - they have to first read all input, then produce all output,
         // but can't mix reading stdin and write to stdout at the same time as `git` (or `gitoxide`) don't read the output while
